@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Wordle in the Wild</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f3f4f6;padding:20px;margin:0}
+.wrap{max-width:860px;margin:0 auto}
+.box{background:#fff;border:1px solid #dbe1e8;border-radius:18px;padding:20px;margin-bottom:16px}
+h1,h2,h3,p{margin-top:0}
+button,input,textarea{width:100%;padding:12px 14px;border-radius:12px;font-size:16px;box-sizing:border-box}
+input,textarea{border:1px solid #cfd7e3;background:#fff}
+button{border:none;background:#0f172a;color:#fff;font-weight:700;cursor:pointer;margin-top:10px}
+button:hover{opacity:.96}
+button.secondary{background:#fff;color:#0f172a;border:1px solid #cfd7e3}
+.grid{display:grid;grid-template-columns:repeat(5,52px);gap:6px;margin-top:10px}
+.tile{width:52px;height:52px;display:flex;align-items:center;justify-content:center;font-weight:bold;border-radius:10px;border:1px solid #ccc;text-transform:uppercase;background:#fff;color:#0f172a}
+.correct{background:#6aaa64;color:#fff;border-color:#6aaa64}.present{background:#c9b458;color:#fff;border-color:#c9b458}.absent{background:#787c7e;color:#fff;border-color:#787c7e}
+.hint{margin-top:12px;background:#eff6ff;padding:12px;border-radius:12px;color:#1e3a8a;border:1px solid #bfdbfe}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.stat{background:#f8fafc;border:1px solid #dbe1e8;border-radius:14px;padding:12px}
+.stat small{display:block;color:#64748b;text-transform:uppercase;font-size:11px;margin-bottom:6px}
+.q-list{display:grid;grid-template-columns:1fr;gap:10px}
+.q-btn{display:flex;justify-content:space-between;align-items:center;text-align:left;background:#fff;color:#0f172a;border:1px solid #cfd7e3;padding:14px;border-radius:14px}
+.q-btn.available{background:#ecfeff;border-color:#a5f3fc}.q-btn.done{background:#f8fafc;color:#475569}.q-btn.locked{background:#f1f5f9;color:#94a3b8}
+.badge{font-size:12px;font-weight:700; padding:4px 8px; border-radius:999px;}
+.badge.available{background:#cffafe;color:#155e75}.badge.complete{background:#dcfce7;color:#166534}.badge.wrong{background:#fee2e2;color:#991b1b}.badge.locked{background:#e2e8f0;color:#475569}
+.final{border:2px solid #16a34a;background:#f0fdf4}.wrong-note{border:2px solid #dc2626;background:#fef2f2}
+@media (max-width:640px){.stats{grid-template-columns:1fr}.grid{grid-template-columns:repeat(5,44px)}.tile{width:44px;height:44px}}
+</style>
+</head>
+<body>
+<div class="wrap"><div id="app"></div></div>
+<script>
+const START_DATE = new Date('2026-01-01');
+const MAX_GUESSES = 6;
+const WORDS = [
+  { word: 'ASIMO', hint: "Honda's famous humanoid robot" },
+  { word: 'FRAME', hint: 'The structure that supports the vehicle' },
+  { word: 'MODEL', hint: 'A specific vehicle design or version' },
+  { word: 'BUILD', hint: 'The process of assembling vehicles' },
+  { word: 'POWER', hint: 'What drives Honda engines forward' },
+  { word: 'DRIVE', hint: 'Moving performance on the road or track' },
+  { word: 'ROBOT', hint: 'Automation used in manufacturing lines' },
+  { word: 'MOTOR', hint: 'The heart of Honda machines' },
+  { word: 'VOICE', hint: 'Control systems responding to spoken commands' },
+  { word: 'DREAM', hint: 'The idea that starts every Honda innovation' }
+];
+
+let state = JSON.parse(localStorage.getItem('witwProgressV2')) || {
+  name:'', score:0, answered:{}, level:null, guesses:[], started:false, finished:false, message:''
+};
+
+function save(){ localStorage.setItem('witwProgressV2', JSON.stringify(state)); }
+function daysElapsed(){ return Math.floor((new Date() - START_DATE) / 86400000); }
+function unlockedCount(){ return Math.max(0, Math.min((daysElapsed()+1)*2, WORDS.length)); }
+function completedCount(){ return Object.keys(state.answered).length; }
+function allAnswered(){ return completedCount() === WORDS.length; }
+function answeredLevels(){ return Object.keys(state.answered).map(Number); }
+
+function evaluateGuess(guess, answer){
+  const result = []; const answerArray = answer.split('');
+  for(let i=0;i<guess.length;i++){
+    if(guess[i]===answer[i]){ result.push('correct'); answerArray[i]=null; }
+    else if(answerArray.includes(guess[i])){ result.push('present'); answerArray[answerArray.indexOf(guess[i])] = null; }
+    else { result.push('absent'); }
+  }
+  return result;
+}
+
+function startGame(){
+  const val = document.getElementById('name').value.trim();
+  if(!val){ state.message='Please enter your name or team name to start.'; render(); return; }
+  state.name = val; state.started = true; state.message=''; save(); render();
+}
+
+function pickQuestion(index){
+  if(index >= unlockedCount()) return;
+  if(state.answered[index]) return;
+  state.level = index; state.guesses = []; state.message=''; save(); render();
+}
+
+function markAnswered(index, status){
+  state.answered[index] = status; // complete or wrong
+  state.level = null;
+  state.guesses = [];
+  if(allAnswered()) state.finished = true;
+  save();
+}
+
+function submitGuess(){
+  if(state.level === null || state.finished) return;
+  const input = document.getElementById('guess');
+  const guess = (input.value || '').toUpperCase().replace(/[^A-Z]/g,'').slice(0,5);
+  const answer = WORDS[state.level].word;
+  if(guess.length !== 5){ state.message='Enter a 5-letter word.'; render(); return; }
+  if(state.guesses.length >= MAX_GUESSES){ state.message='No guesses left for this question.'; render(); return; }
+
+  const result = evaluateGuess(guess, answer);
+  state.guesses.push({ word: guess, result });
+  input.value='';
+
+  if(guess === answer){
+    const bonus = (MAX_GUESSES - state.guesses.length + 1) * 20;
+    state.score += 200 + bonus;
+    state.message='✅ Correct! This question is now marked complete.';
+    save();
+    setTimeout(() => { markAnswered(state.level, 'complete'); render(); }, 1100);
+    render();
+    return;
+  }
+
+  if(state.guesses.length === MAX_GUESSES){
+    state.message = '❌ Incorrect. This question is now marked wrong and cannot be attempted again.';
+    save();
+    const current = state.level;
+    setTimeout(() => { markAnswered(current, 'wrong'); render(); }, 1400);
+    render();
+    return;
+  }
+
+  state.message='Keep going!'; save(); render();
+}
+
+function renderBoard(){
+  let html='';
+  const emptyRows = Array.from({length: MAX_GUESSES - state.guesses.length}, () => ({word:'', result:Array(5).fill('empty')}));
+  [...state.guesses, ...emptyRows].forEach(row => {
+    html += '<div class="grid">';
+    for(let i=0;i<5;i++) html += `<div class="tile ${row.result[i] || 'empty'}">${row.word[i] || ''}</div>`;
+    html += '</div>';
+  });
+  return html;
+}
+
+function resultBadge(status){
+  if(status === 'complete') return '<span class="badge complete">Completed</span>';
+  if(status === 'wrong') return '<span class="badge wrong">Marked Wrong</span>';
+  return '<span class="badge available">Available</span>';
+}
+
+function renderQuestionList(){
+  const unlocked = unlockedCount();
+  let html = `<div class="box"><h2>Available Questions</h2><p>Two new questions unlock each day. Questions you complete <b>or miss</b> are locked and cannot be attempted again.</p><div class="q-list">`;
+  for(let i=0;i<WORDS.length;i++){
+    const status = state.answered[i];
+    if(i < unlocked){
+      if(status){
+        html += `<button class="q-btn done" disabled><span>Question ${i+1}</span>${resultBadge(status)}</button>`;
+      } else {
+        html += `<button class="q-btn available" onclick="pickQuestion(${i})"><span>Question ${i+1}</span>${resultBadge('available')}</button>`;
+      }
+    } else {
+      html += `<button class="q-btn locked" disabled><span>Question ${i+1}</span><span class="badge locked">Locked</span></button>`;
+    }
+  }
+  html += `</div></div>`;
+  return html;
+}
+
+function copyResults(){
+  const correct = answeredLevels().filter(i => state.answered[i]==='complete').length;
+  const wrong = answeredLevels().filter(i => state.answered[i]==='wrong').length;
+  const text = `${state.name} scored ${state.score} points in Wordle in the Wild. Correct: ${correct}. Wrong: ${wrong}.`;
+  navigator.clipboard.writeText(text).then(()=>alert('Results copied!')).catch(()=>alert('Copy failed.'));
+}
+
+function playAgain(){
+  localStorage.removeItem('witwProgressV2');
+  state = { name:'', score:0, answered:{}, level:null, guesses:[], started:false, finished:false, message:'' };
+  render();
+}
+
+function render(){
+  const app = document.getElementById('app');
+  if(!state.started){
+    app.innerHTML = `<div class="box"><h1>Wordle in the Wild</h1><p>Honda-themed Wordle challenge with 2 questions released per day.</p><input id="name" placeholder="Enter your name or team name" /><button onclick="startGame()">Start Game</button>${state.message?`<p>${state.message}</p>`:''}</div>`;
+    return;
+  }
+
+  const correct = answeredLevels().filter(i => state.answered[i]==='complete').length;
+  const wrong = answeredLevels().filter(i => state.answered[i]==='wrong').length;
+
+  if(state.finished){
+    app.innerHTML = `<div class="box final"><h1>🏆 Game Complete!</h1><div class="stats"><div class="stat"><small>Player</small><b>${state.name}</b></div><div class="stat"><small>Final Score</small><b>${state.score}</b></div><div class="stat"><small>Results</small><b>${correct} correct / ${wrong} wrong</b></div></div><p style="margin-top:14px;">Share your result with the event admin:</p><textarea readonly>${state.name} scored ${state.score} points in Wordle in the Wild. Correct: ${correct}. Wrong: ${wrong}.</textarea><button onclick="copyResults()">Copy Results</button><button class="secondary" onclick="playAgain()">Reset Game</button></div>`;
+    return;
+  }
+
+  let html = `<div class="box"><h1>Wordle in the Wild</h1><div class="stats"><div class="stat"><small>Player</small><b>${state.name}</b></div><div class="stat"><small>Score</small><b>${state.score}</b></div><div class="stat"><small>Progress</small><b>${completedCount()} / ${WORDS.length} answered</b></div></div></div>`;
+
+  if(state.level === null){
+    html += renderQuestionList();
+  } else {
+    const qNum = state.level + 1;
+    const hintVisible = state.guesses.length >= 4;
+    html += `<div class="box ${state.message.includes('marked wrong') ? 'wrong-note' : ''}"><h2>Question ${qNum}</h2><p>Guesses: ${state.guesses.length}/${MAX_GUESSES}</p>${renderBoard()}${hintVisible ? `<div class="hint">💡 Hint: ${WORDS[state.level].hint}</div>` : ''}<input id="guess" maxlength="5" placeholder="Enter guess" onkeydown="if(event.key==='Enter') submitGuess()" /><button onclick="submitGuess()">Submit Guess</button>${state.message?`<p style="margin-top:12px;">${state.message}</p>`:''}</div>`;
+  }
+
+  app.innerHTML = html;
+}
+
+render();
+</script>
+</body>
+</html>
